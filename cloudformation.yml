@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  EmailAddress:
+    Description: The receiving email address
+    Type: String
+  TargetEmailAddress:
+    Description: The forwarding address
+    Type: String
+Resources:
+  LambdaLogGroup: 
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      RetentionInDays: 365
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+        - PolicyName: lambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - 'logs:PutLogEvents'
+              - 'logs:CreateLogStream'
+              Resource: !Sub "${LambdaLogGroup.Arn}:*"
+            - Effect: Allow
+              Action:
+                - 'sns:Publish'
+              Resource: !GetAtt SNSTopic.TopicArn
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs20.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: index.handler
+      Timeout: 30
+      Code:
+        ZipFile: |
+          const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
+          exports.handler = async (event) => {
+            console.log(event);
+            const res = await new SNSClient().send(new PublishCommand({
+              TopicArn: process.env.TopicArn,
+              Message: "New email received!\n\n" + JSON.stringify(event, undefined, 4),
+            }));
+            console.log(res);
+          };
+      LoggingConfig:
+        LogGroup: !Ref LambdaLogGroup
+        LogFormat: JSON
+      Environment:
+        Variables:
+          TopicArn: !GetAtt SNSTopic.TopicArn
+  ReceiptRuleSet:
+    Type: 'AWS::SES::ReceiptRuleSet'
+  EmailRule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn: EmailRuleLambdaPermission
+    Properties:
+      Rule:
+        Actions:
+          - LambdaAction:
+              FunctionArn: !GetAtt LambdaFunction.Arn
+        Enabled: true
+        Recipients:
+          - !Ref EmailAddress
+      RuleSetName: !Ref ReceiptRuleSet
+  EmailRuleLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: ses.amazonaws.com
+      SourceArn: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:receipt-rule-set/${ReceiptRuleSet}:receipt-rule/*"
+  SNSTopic:
+    Type: "AWS::SNS::Topic"
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref TargetEmailAddress
+      Protocol: email
+      TopicArn: !GetAtt SNSTopic.TopicArn
