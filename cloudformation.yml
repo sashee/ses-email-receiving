@@ -40,7 +40,7 @@ Resources:
   LambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Role: !GetAtt LambdaExecutionRole.Arn
       Handler: index.handler
       Timeout: 30
@@ -49,11 +49,17 @@ Resources:
           const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
           exports.handler = async (event) => {
             console.log(event);
-            const res = await new SNSClient().send(new PublishCommand({
-              TopicArn: process.env.TopicArn,
-              Message: "New email received!\n\n" + JSON.stringify(event, undefined, 4),
-            }));
-            console.log(res);
+            return Promise.all(event.Records.map(async (record) => {
+              const subject = record?.ses?.mail?.commonHeaders?.subject;
+              const from = record?.ses?.mail?.commonHeaders?.from?.join(", ");
+              const to = record?.ses?.mail?.commonHeaders?.to?.join(", ");
+
+              const res = await new SNSClient().send(new PublishCommand({
+                TopicArn: process.env.TopicArn,
+                Message: "New email received!\n\nSubject: " + subject + "\nFrom: " + from + "\nTo: " + to + "\n\n" + JSON.stringify(record, undefined, 4),
+              }));
+              console.log(res);
+            }))
           };
       LoggingConfig:
         LogGroup: !Ref LambdaLogGroup
